@@ -1,40 +1,40 @@
 [LOGGING]
 log_file = unifi_client_listener.log
 # log_level = DEBUG
-log_to_console = True
+# log_to_console = True
 
 [UNIFI_CONTROLLER]
-ip = 192.168.11.4
+ip = 192.168.0.10
 # port = 8443
-creds_file = /Users/erwin/.ssh/.unificreds
+creds_file = /home/myname/.unifi-events-listener/.unificreds
 # ssl_verify = False
 
 [EVENTS]
 user_event_list = [
         {
-            "friendly_name": "iPhone-Erwin",
-            "event_user": "78:7e:61:87:fc:b2",
+            "friendly_name": "iPhone-Bassie",
+            "event_user": "<mac address>",
             "event_action_list": [{
                     "event_key": "EVT_WU_Connected",
-                    "url_to_call": "http://homeserver.localdomain:8080/json.htm?type=command&param=switchlight&idx=880&switchcmd=On"
+                    "url_to_call": "<url to call>"
                 }, {
                     "event_key": "EVT_WU_Disconnected",
-                    "url_to_call": "http://homeserver.localdomain:8080/json.htm?type=command&param=switchlight&idx=880&switchcmd=Off"
+                    "url_to_call": "<url to call>"
                 }
             ]
         },
         {
-            "friendly_name": "iPhone-Liesbeth",
-            "event_user": "e0:c7:67:3c:df:26",
+            "friendly_name": "iPhone-Adriaan",
+            "event_user": "<mac address>",
             "event_action_list": [{
                     "event_key": "EVT_WU_Connected",
-                    "url_to_call": "http://homeserver.localdomain:8080/json.htm?type=command&param=switchlight&idx=881&switchcmd=On"
+                    "url_to_call": "<url to call>"
                 }, {
                     "event_key": "EVT_WU_Disconnected",
-                    "url_to_call": "http://homeserver.localdomain:8080/json.htm?type=command&param=switchlight&idx=881&switchcmd=Off"
+                    "url_to_call": "<url to call>"
                 }
             ]
         }
     ]
-
-send_to_server = False
+# For debugging purpuse
+# send_to_server = False

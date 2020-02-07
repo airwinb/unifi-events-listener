@@ -3,7 +3,7 @@ Change history
 Version 0.2.0, 2020-02-07
 -------------------------
 - Updated documentation
-- Fixed UEL-001:
+- Fixed UEL-001: Crash when externally blocking MAC using admin
 
 Version 0.1.0, 2019-11-03
 -------------------------
