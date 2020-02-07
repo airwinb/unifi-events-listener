@@ -24,9 +24,9 @@ from queue import Queue
 import collections
 
 # Constants (Do not change)
-__version__ = '0.1.0-SNAPSHOT'
+__version__ = '0.2.0'
 __date__ = '2019-11-03'
-__updated__ = '2019-11-08'
+__updated__ = '2020-02-07'
 
 # Global variables
 logger = None
@@ -203,7 +203,7 @@ def get_urls_to_call(user_event_url_list, event_list):
         found_user = False
         i = 0
         while not found_user and i < len(user_event_url_list):
-            if event['user'] == user_event_url_list[i]['event_user']:
+            if 'user' in event and event['user'] == user_event_url_list[i]['event_user']:
                 found_user = True
                 found_key = False
                 j = 0

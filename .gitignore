@@ -1,2 +1,5 @@
+.idea
+__pycache__
 /venv/
 /*.json
+unifi_events_listener.conf
