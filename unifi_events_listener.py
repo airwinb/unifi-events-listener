@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 
-# packages to install:
-# pip install aiohttp
-# pip install asyncio
-
 # TODO
-# - define event filter and url actions
-# - call url when event occurs
 
 from __future__ import print_function
 
@@ -24,9 +18,15 @@ from queue import Queue
 import collections
 
 # Constants (Do not change)
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 __date__ = '2019-11-03'
-__updated__ = '2020-02-07'
+__updated__ = '2021-06-06'
+
+# Constants (No real need to change)
+# Duration which the main thread will sleep to allow the listener to collect message
+EVENT_COLLECTION_PERIOD_IN_SECONDS = 5
+# If not receiving any messages during this time, then the connection will be re-initiated
+NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS = 120
 
 # Global variables
 logger = None
@@ -42,6 +42,7 @@ class UnifiClient(object):
         self.port = port
         self.ssl_verify = ssl_verify
         self.timeout = timeout
+        self.last_received_event = time.time()
         
         self.url = 'https://' + self.host + ':' + str(port) + '/'
         self.login_url = self.url + 'api/login'
@@ -52,7 +53,7 @@ class UnifiClient(object):
         # dictionary for storing unifi data
         self.unifi_data = collections.OrderedDict()
 
-        self.event_q = Queue(10)
+        self.event_q = Queue(100)
 
         logger.debug('Python: %s' % repr(sys.version_info))
         
@@ -100,12 +101,13 @@ class UnifiClient(object):
                     assert response.status == 200
                     json_response = await response.json()
                     logger.debug('Received json response to initial data:')
-                    logger.debug(json.dumps(json_response, indent=2))
+                    # logger.debug(json.dumps(json_response, indent=2))
                     self.update_unifi_data(json_response)
 
                 async with session.ws_connect(self.ws_url, ssl=self.ssl_verify) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
+                            self.last_received_event = time.time()
                             # logger.debug('received: %s' % json.dumps(json.loads(msg.data), indent=2))
                             self.update_unifi_data(msg.json(loads=json.loads))
                         elif msg.type == aiohttp.WSMsgType.CLOSED:
@@ -279,17 +281,23 @@ def main():
 
     try:
         client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
-
         while True:
-            event_list = client.events()
+            time.sleep(EVENT_COLLECTION_PERIOD_IN_SECONDS)
             # logger.info('got new data')
             # logger.info(json.dumps(events, indent=2))
-            url_list = get_urls_to_call(user_event_url_list, event_list)
-            for url in url_list:
-                call_url(url)
+            ago = time.time() - client.last_received_event
+            logger.debug("client received a message %d seconds ago" % ago)
+            if ago < NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS:
+                event_list = client.events(blocking=False)
+                url_list = get_urls_to_call(user_event_url_list, event_list)
+                for url in url_list:
+                    call_url(url)
+            else:
+                logger.warning("No messages received for at least %d seconds. Restarting client" % NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS)
+                client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
 
     except KeyboardInterrupt:
-        logger.info('Program Exit')
+        logger.info('UnifiClient stopped. Have a nice day!')
 
 
 if __name__ == '__main__':
