@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import requests
+import signal
 import sys
 import time
 import threading
@@ -18,9 +19,9 @@ from queue import Queue
 import collections
 
 # Constants (Do not change)
-__version__ = '0.3.0'
+__version__ = '0.5.0'
 __date__ = '2019-11-03'
-__updated__ = '2021-06-06'
+__updated__ = '2021-06-09'
 
 # Constants (No real need to change)
 # Duration which the main thread will sleep to allow the listener to collect message
@@ -29,6 +30,7 @@ EVENT_COLLECTION_PERIOD_IN_SECONDS = 5
 NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS = 120
 
 # Global variables
+keep_running = True
 logger = None
 send_to_server = True
 
@@ -49,6 +51,8 @@ class UnifiClient(object):
         self.initial_info_url = self.url + 'api/s/default/stat/device'
         self.params = {'_depth': 4, 'test': 0}
         self.ws_url = 'wss://{}:{}/wss/s/default/events'.format(self.host, self.port)
+        self.thread = None
+        self.running = False
         
         # dictionary for storing unifi data
         self.unifi_data = collections.OrderedDict()
@@ -58,16 +62,20 @@ class UnifiClient(object):
         logger.debug('Python: %s' % repr(sys.version_info))
         
         self.connect_websocket()
-        
+
+    def terminate(self):
+        self.running = False
+
     def connect_websocket(self):
-        t = threading.Thread(target=self.start_websocket)
-        t.daemon = True
-        t.start()
+        self.thread = threading.Thread(target=self.start_websocket)
+        self.thread.daemon = True
+        self.thread.start()
 
     def start_websocket(self):
         logger.info('Python 3 websocket')
+        self.running = True
         loop = asyncio.new_event_loop()
-        while True:
+        while self.running:
             loop.run_until_complete(self.async_websocket())
             time.sleep(30)
             logger.warning('Reconnecting websocket')
@@ -102,54 +110,56 @@ class UnifiClient(object):
                     json_response = await response.json()
                     logger.debug('Received json response to initial data:')
                     # logger.debug(json.dumps(json_response, indent=2))
-                    self.update_unifi_data(json_response)
+                    self.process_unifi_message(json_response)
 
                 async with session.ws_connect(self.ws_url, ssl=self.ssl_verify) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             self.last_received_event = time.time()
                             # logger.debug('received: %s' % json.dumps(json.loads(msg.data), indent=2))
-                            self.update_unifi_data(msg.json(loads=json.loads))
+                            self.process_unifi_message(msg.json(loads=json.loads))
                         elif msg.type == aiohttp.WSMsgType.CLOSED:
                             logger.info('WS closed')
+                            self.running = False
                             break
                         elif msg.type == aiohttp.WSMsgType.ERROR:
                             logger.error('WS closed with Error')
+                            self.running = False
                             break
 
         except AssertionError as e:
             logger.error('failed to connect: %s' % e)
+            self.running = False
 
-        logger.info('Exited')
+        logger.info('async_websocket: Exited')
         
-    def update_unifi_data(self, data):
+    def process_unifi_message(self, message):
         """
         takes data from the websocket and puts events in the queue
         Uses OrderDict to preserve the order for repeatable output.
         """
         unifi_data = collections.OrderedDict()
         
-        meta = data['meta']
+        meta = message['meta']
         update_type = meta.get("message", "_unknown_")
         # "events", "device:sync", "device:update", "speed-test:update", "user:sync", "sta:sync", possibly others
 
         if update_type == "events":
-            logger.info('received events message')
-            logger.info('\n: %s' % json.dumps(data, indent=2))
+            # logger.info('\n: %s' % json.dumps(message, indent=2))
+            data = message['data']
+            data_len = len(data)
+            if data_len > 1:
+                logger.info('nr of items in data: %d' % data_len)
             if self.event_q.full():
                 # discard oldest event
                 self.event_q.get()
                 self.event_q.task_done()
-            self.event_q.put(data['data'])
-        else:
-            logger.debug('received %s message' % update_type)
+            self.event_q.put(data)
+        # else:
+            # logger.debug('received %s message' % update_type)
             # logger.debug('\n: %s' % json.dumps(data, indent=2))
 
-        if self.event_q.qsize() > 0:
-            logger.info('%d events in event queue%s' %
-                        (self.event_q.qsize(), '' if not self.event_q.full() else ' event queue is FULL'))
-
-        if logger.getEffectiveLevel() == logging.DEBUG:    
+        if logger.getEffectiveLevel() == logging.DEBUG:
             with open('raw_data.json', 'w') as f:
                 f.write(json.dumps(unifi_data, indent=2))
             
@@ -198,10 +208,20 @@ def init_logging(config):
     return local_logger
 
 
+def event_to_string(event):
+    hostname = event.get('hostname', '?')
+    apOrNetwork = event.get('ap_displayName')
+    if apOrNetwork is None:
+        apOrNetwork = event.get('network', '?')
+    return f"{event['subsystem']}: user {event['user']} ({hostname}) - {event['key']} at {apOrNetwork}"
+
+
 def get_urls_to_call(user_event_url_list, event_list):
     global logger
     url_list = []
     for event in event_list:
+        # logger.debug('\n: event:  %s' % json.dumps(event, indent=2))
+        logger.info(event_to_string(event))
         found_user = False
         i = 0
         while not found_user and i < len(user_event_url_list):
@@ -239,7 +259,7 @@ def call_url(url):
 
 
 def main():
-    global logger
+    global keep_running, logger, send_to_server
 
     # read configuration
     config = ConfigParser({'send_to_server': "true"})
@@ -279,29 +299,35 @@ def main():
     user_event_url_list = json.loads(config.get('EVENTS', 'user_event_list'))
     send_to_server = config.getboolean('EVENTS', 'send_to_server', fallback=True)
 
-    try:
-        client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
-        while True:
-            time.sleep(EVENT_COLLECTION_PERIOD_IN_SECONDS)
-            # logger.info('got new data')
-            # logger.info(json.dumps(events, indent=2))
-            ago = time.time() - client.last_received_event
-            logger.debug("client received a message %d seconds ago" % ago)
-            if ago < NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS:
-                event_list = client.events(blocking=False)
-                url_list = get_urls_to_call(user_event_url_list, event_list)
-                for url in url_list:
-                    call_url(url)
-            else:
-                logger.warning("No messages received for at least %d seconds. Restarting client" % NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS)
-                client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
+    def signal_handler(signal1, frame):
+        global keep_running, logger
+        logger.info('Signal received: %s from %s' % (signal1, frame))
+        logger.debug('Setting keep_running to False')
+        keep_running = False
 
-    except KeyboardInterrupt:
-        logger.info('UnifiClient stopped. Have a nice day!')
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
+    while keep_running:
+        time.sleep(EVENT_COLLECTION_PERIOD_IN_SECONDS)
+        # logger.info('got new data')
+        # logger.info(json.dumps(events, indent=2))
+        ago = time.time() - client.last_received_event
+        # logger.debug("client received a message %d seconds ago" % ago)
+        if ago < NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS:
+            event_list = client.events(blocking=False)
+            url_list = get_urls_to_call(user_event_url_list, event_list)
+            for url in url_list:
+                call_url(url)
+        else:
+            logger.warning("No messages received for at least %d seconds. Restarting client" % NO_MESSAGES_REFRESH_CONNECTION_TIMEOUT_IN_SECONDS)
+            client.terminate();
+            client = UnifiClient(unifi_user, unifi_password, unifi_ip, unifi_port, unifi_ssl_verify)
+
+    client.terminate()
+    logger.info('UnifiClient stopped. Have a nice day!')
 
 
 if __name__ == '__main__':
-    '''
-    <Ctrl-C> to exit
-    '''
     main()

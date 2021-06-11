@@ -3,3 +3,4 @@ __pycache__
 /venv/
 /*.json
 unifi_events_listener.conf
+unifi_client_listener.log
